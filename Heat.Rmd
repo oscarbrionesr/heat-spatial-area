@@ -1,0 +1,156 @@
+---
+title: "Heat-related Mortality"
+author: "Oscar Briones Ramirez"
+date: '2023-04-12'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+setwd("/Users/oscar/Desktop/Winter2023/STAT469/Heat")
+
+library(tidyverse)
+library(GGally)
+library(car)
+library(MASS)
+library(lmtest)
+library(multcomp)
+library(forecast)
+library(gstat)
+library(nlme)
+library(sf)
+library(spdep)
+
+source("moranBasis.R")
+source("stdres.gls.R")
+
+myShp <- st_read("HoustonHeat.shp")
+
+myShpDF <- data.frame(myShp)%>%
+  dplyr::select(-geometry)
+```
+
+**1. Create exploratory plots of the data by looking at the relationship between log(Count+1) (the response variable) and a few of the explanatory variables. Comment on any general relationships you see from the data. Note that we explore log(Count+1) here because Poisson regression is log-linear and we arbitrarily add one to the counts because log(0) = -Inf .**
+
+```{r 1, include=TRUE}
+
+ggplot(data=myShpDF, mapping=aes(x=MED_AGE, y=log(Count+1))) + geom_point()
+
+ggplot(data=myShpDF, mapping=aes(x=Population, y=log(Count+1))) + geom_point()
+
+ggplot(data=myShpDF, mapping=aes(x=MinTemp, y=log(Count+1))) + geom_point() + geom_smooth(se=FALSE)
+
+```
+
+
+- We can see that morbidities seem to be highest around groups where the median age is about 30.
+- We can also see that count is high where population is around 1200
+- Finally, we can also tell that morbidities increase slightly as the minimum summer temperature increases.
+
+&nbsp;
+&nbsp;
+&nbsp;
+
+**2. Fit an independent MLR model with a linear effect between log(Count+1) and all the explanatory variables. Explore the residuals to see if there is evidence of spatial correlation by mapping them and using a Moran’s I or Geary’s C test.**
+
+```{r 2, include=TRUE}
+#LM
+heat.lm <- lm(formula=log(Count+1)~., data=myShpDF)
+
+#Residuals
+ggplot(data=myShp) +
+  geom_sf(mapping=aes(fill=resid(heat.lm)), color="black") +  scale_fill_distiller(palette="Spectral")
+
+#Moran test
+moran.test(x=heat.lm$residuals, listw=nb2listw(poly2nb(st_make_valid(myShp))))
+
+```
+
+
+
+-We can see from the map of the residuals that there is correlation algon the areas of Houston.
+
+-From the Moran test we can comfirm there is aerial correlation.
+
+&nbsp;
+&nbsp;
+&nbsp;
+
+**4. Fit your spatial GLM model using Moran basis function (use up to tol=.95 but you may be able to get away with less) and validate any assumptions you made to fit the model.**
+
+```{r 4, include=TRUE}
+
+#Moran basis GLM
+A <- nb2mat(poly2nb(st_make_valid(myShp)), style="B")
+
+X <- model.matrix(object=log(Count + 1)~., data=myShpDF)
+
+M <- moranBasis(X, A, tol=.75)
+
+myShpDF <- bind_cols(myShpDF, M)
+
+heat.glm <- glm(formula=Count~., data=myShpDF, family=poisson)
+heat.glm$coefficients
+
+#Assumptions:
+
+#linearity:
+avPlots(heat.glm, ask=FALSE)
+
+#Independence
+sres <- resid(heat.glm, "pearson")
+
+moran.test(x=sres, listw=nb2listw(poly2nb(st_make_valid(myShp))))
+
+#decorr residuals
+ggplot(data=myShp) +
+   geom_sf(mapping=aes(fill=sres), color="black") +  scale_fill_distiller(palette="RdBu")
+
+
+#Equal variance
+ggplot(mapping=aes(y=log(fitted(heat.glm)), x=sres)) + geom_point()
+```
+
+
+-After fitting the Moran Basis function GLM, we can see from the added variable plots that the linearity assumption is met.
+-We can also see from the Moran test that there is no longer correlation, and we have independence.
+
+-The map of the standardized residuals shows that correlation present has been reduced.
+
+-Finally, the plot of the fitted values vs. residuals shows there is equal variance.
+
+&nbsp;
+&nbsp;
+&nbsp;
+
+**5. Calculate confidence intervals for the effect of each explanatory variable included in your model (but NOT the basis functions). Draw conclusions about who is at greatest risk for heat-related mortality based on your estimated effects.**
+
+```{r 5, echo = TRUE}
+varnames <- names(coef(heat.glm))[1:11]
+
+confint(heat.glm, varnames, level=.95)
+
+```
+
+
+After looking at the intervals of the explanatory variables, it looks like a few demographics are at higer risk of heat related mortality. We can see that places with higher population of Hispanic people, higher percentage of people ovr 65, living alone, no AC, or the minimum temperature is higher, the count of morbidities could increase.
+
+&nbsp;
+&nbsp;
+&nbsp;
+
+**6. Draw a map of the correlated residuals to try and reach conclusions about areas at risk of heat-related mortality not explained by your explanatory variables**
+
+```{r 6, echo = TRUE}
+spatial <- as.matrix(coef(heat.glm)[-(1:11)])
+
+M <- as.matrix(M)
+
+ggplot(data=myShp) +
+   geom_sf(mapping=aes(fill=M %*% spatial), color="black") +  scale_fill_distiller(palette="RdBu")
+
+```
+
+
+
+From the map of our correlated residuals, we can see that most areas around the metropolitan area have high risk of heat realted mortality due to the higher heat presence, and preventative measures should be considered for those areas.
+
